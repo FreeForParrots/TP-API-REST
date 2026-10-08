@@ -1,7 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
+from pwdlib import PasswordHash
+import secrets
 
 app = FastAPI()
+security = HTTPBearer()
+password_hash = PasswordHash.recommended()
+
 
 #classe pour livres
 class Livre:
@@ -37,6 +43,10 @@ class UserCreate(BaseModel):
     login: str
     password: str
 
+class LoginData(BaseModel):
+    login: str
+    password: str
+
 
 # liste des livres
 books = [
@@ -50,15 +60,9 @@ books = [
 ]
 
 # liste des utilisateurs
-users = [
-    {
-        "id": 1,
-        "nom": "Alice",
-        "email": "alice@test.fr"
-    }
-]
+users = []
 
-
+tokens = {}
 
 
 # page d'accueil
@@ -128,14 +132,73 @@ def get_stats():
 # création d'utilisateur
 @app.post("/users", status_code=201)
 def add_user(user: UserCreate):
-    users.append(user.model_dump())
-    return {"message": "Utilisateur créé", "user": user}
+    hashed_password = password_hash.hash(user.password)
+    new_user = {
+        "id": user.id,
+        "nom": user.nom,
+        "email": user.email,
+        "login": user.login,
+        "password_hash": hashed_password
+    }
+    users.append(new_user)
+    return {"message": "Utilisateur créé", "user": new_user}
 
 # connection
 @app.post("/login")
-def login(credentials: dict):
-    login = credentials.get("login")
-    password = credentials.get("password")
-    if login == "admin" and password == "admin":
-        return {"token": "123456", "message": "Connexion réussie"}
-    raise HTTPException(status_code=401, detail="Identifiants invalides")
+def login(credentials: LoginData):
+
+    login = credentials.login
+    password = credentials.password
+
+    user = None
+
+    for u in users:
+        if u.get("login") == login:
+            user = u
+            break
+
+    if user is None or not password_hash.verify(
+        password,
+        user["password_hash"]
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Identifiants invalides"
+        )
+
+    token = secrets.token_urlsafe(32)
+
+    tokens[token] = user["id"]
+
+    return {
+        "token": token,
+        "message": "Connexion réussie"
+    }
+
+@app.get("/profile")
+def profile(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    token = credentials.credentials
+
+    if token not in tokens:
+        raise HTTPException(
+            status_code=401,
+            detail="Token invalide"
+        )
+
+    user_id = tokens[token]
+
+    for user in users:
+        if user["id"] == user_id:
+            return {
+                "id": user["id"],
+                "nom": user["nom"],
+                "email": user["email"],
+                "login": user["login"]
+            }
+
+    raise HTTPException(
+        status_code=401,
+        detail="Utilisateur non trouvé"
+    )
